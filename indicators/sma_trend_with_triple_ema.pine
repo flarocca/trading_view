@@ -1,0 +1,36 @@
+// Copyright 2026 Facundo La Rocca (© FacuTheRock)
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
+
+//@version=6
+indicator(title="Fast/Mid/Slow EMA + Trend SMA", shorttitle="SMA & 3EMA", overlay=true)
+
+src = input.source(close, "Source", group="Inputs")
+
+ema1Len = input.int(5, "EMA Fast Period", minval=1, group="Periods")
+ema2Len = input.int(10, "EMA Mid Period", minval=1, group="Periods")
+ema3Len = input.int(200, "EMA Slow Period", minval=1, group="Periods")
+smaLen  = input.int(200, "SMA Trend Period", minval=1, group="Periods")
+
+ema1Color = input.color(color.yellow, "EMA Fast Color", group="Style")
+ema2Color = input.color(color.red, "EMA Mid Color", group="Style")
+ema3Color = input.color(color.blue, "EMA Slow Color", group="Style")
+smaColor  = input.color(color.aqua, "SMA Trend Color", group="Style")
+
+ema1 = ta.ema(src, ema1Len)
+ema2 = ta.ema(src, ema2Len)
+ema3 = ta.ema(src, ema3Len)
+sma  = ta.sma(src, smaLen)
+
+plot(ema1, title="EMA Fast", color=ema1Color, linewidth=1)
+plot(ema2, title="EMA Mid", color=ema2Color, linewidth=1)
+plot(ema3, title="EMA Slow", color=ema3Color, linewidth=2)
+plot(sma, title="SMA Trend", color=smaColor, linewidth=2)
