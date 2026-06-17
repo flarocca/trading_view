@@ -1,0 +1,169 @@
+// Copyright 2026 Facundo La Rocca (© FacuTheRock)
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
+
+//@version=6
+indicator("MACD with Divergences", shorttitle="MACD+Div", precision=1)
+
+// ============================================================
+// Inputs: MACD
+// ============================================================
+fastLen = input.int(12, "Fast Length",   group="MACD")
+slowLen = input.int(26, "Slow Length",   group="MACD")
+sigLen  = input.int(9,  "Signal Length", group="MACD")
+src     = input.source(close, "Source",  group="MACD")
+maType  = input.string("EMA", "MA Type", options=["EMA", "SMA"], group="MACD", display=display.none)
+
+// ============================================================
+// Inputs: Divergence detection
+// ============================================================
+pivotLeft  = input.int(5, "Pivot Left Bars",        minval=1, group="Divergence", display=display.none)
+pivotRight = input.int(5, "Pivot Right Bars",       minval=1, group="Divergence", display=display.none)
+rangeMin   = input.int(5,  "Min Bars Between Pivots", minval=1, group="Divergence", display=display.none)
+rangeMax   = input.int(60, "Max Bars Between Pivots", minval=5, group="Divergence", display=display.none)
+
+showRegBull = input.bool(true, "Regular Bullish (price LL / MACD HL)", group="Divergence Types")
+showRegBear = input.bool(true, "Regular Bearish (price HH / MACD LH)", group="Divergence Types")
+showHidBull = input.bool(true, "Hidden Bullish  (price HL / MACD LL)", group="Divergence Types")
+showHidBear = input.bool(true, "Hidden Bearish  (price LH / MACD HH)", group="Divergence Types")
+
+// ============================================================
+// Inputs: Debug
+// ============================================================
+showPivots = input.bool(false, "Show All Pivots (debug)", group="Debug")
+
+// ============================================================
+// MACD calculation
+// ============================================================
+fastMA     = maType == "EMA" ? ta.ema(src,  fastLen) : ta.sma(src,  fastLen)
+slowMA     = maType == "EMA" ? ta.ema(src,  slowLen) : ta.sma(src,  slowLen)
+macd       = fastMA - slowMA
+signalLine = maType == "EMA" ? ta.ema(macd, sigLen)  : ta.sma(macd, sigLen)
+hist       = macd - signalLine
+
+upColor   = hist > nz(hist[1]) ? color.new(color.green, 0) : color.new(color.green, 50)
+downColor = hist < nz(hist[1]) ? color.new(color.red,   0) : color.new(color.red,   50)
+histColor = hist >= 0 ? upColor : downColor
+
+plot(macd,       "MACD",      color=color.new(color.blue,   0))
+plot(signalLine, "Signal",    color=color.new(color.orange, 0))
+plot(hist,       "Histogram", color=histColor, style=plot.style_columns)
+hline(0, "Zero", color=color.new(color.gray, 50))
+
+// ============================================================
+// Pivot detection on MACD line
+// ============================================================
+ph = ta.pivothigh(macd, pivotLeft, pivotRight)
+pl = ta.pivotlow(macd,  pivotLeft, pivotRight)
+
+// Debug: render every detected pivot as a circle on the MACD pane
+plotshape(showPivots and not na(ph) ? ph : na, "Pivot High (debug)",
+          style=shape.circle, location=location.absolute,
+          color=color.new(color.red,   0), size=size.tiny, offset=-pivotRight)
+plotshape(showPivots and not na(pl) ? pl : na, "Pivot Low (debug)",
+          style=shape.circle, location=location.absolute,
+          color=color.new(color.green, 0), size=size.tiny, offset=-pivotRight)
+
+// Persistent state for previous confirmed pivots
+var float prevPH      = na
+var int   prevPHBar   = na
+var float prevPHPrice = na
+var float prevPL      = na
+var int   prevPLBar   = na
+var float prevPLPrice = na
+
+// When ta.pivot* returns non-na, the actual pivot is `pivotRight` bars back
+phBar   = bar_index - pivotRight
+plBar   = bar_index - pivotRight
+phPrice = high[pivotRight]
+plPrice = low[pivotRight]
+
+// Flags reset each bar
+regBull = false
+regBear = false
+hidBull = false
+hidBear = false
+
+// ============================================================
+// Detect divergences and draw lines on both MACD pane and price chart
+// Drawing must happen BEFORE prev* state is updated, otherwise prev*
+// already equals the current pivot and the MACD-pane line is zero-length.
+// Price-chart line uses force_overlay=true (Pine v6 feature) to render
+// on the main price chart instead of the MACD pane.
+// ============================================================
+
+// --- Pivot high on MACD: compare to previous pivot high ---
+if not na(ph)
+    if not na(prevPH)
+        gap = phBar - prevPHBar
+        if gap >= rangeMin and gap <= rangeMax
+            // Regular bearish: price made a higher high, MACD made a lower high
+            if phPrice > prevPHPrice and ph < prevPH
+                regBear := true
+                if showRegBear
+                    line.new(prevPHBar, prevPH, phBar, ph, color=color.red, width=2)
+                    label.new(phBar, ph, "Bear", style=label.style_label_down,
+                              color=color.new(color.red, 20), textcolor=color.white, size=size.tiny)
+                    line.new(prevPHBar, prevPHPrice, phBar, phPrice,
+                             color=color.red, width=2, force_overlay=true)
+            // Hidden bearish: price made a lower high, MACD made a higher high
+            if phPrice < prevPHPrice and ph > prevPH
+                hidBear := true
+                if showHidBear
+                    line.new(prevPHBar, prevPH, phBar, ph,
+                             color=color.orange, width=2, style=line.style_dashed)
+                    label.new(phBar, ph, "H-Bear", style=label.style_label_down,
+                              color=color.new(color.orange, 20), textcolor=color.white, size=size.tiny)
+                    line.new(prevPHBar, prevPHPrice, phBar, phPrice,
+                             color=color.orange, width=2, style=line.style_dashed, force_overlay=true)
+    prevPH      := ph
+    prevPHBar   := phBar
+    prevPHPrice := phPrice
+
+// --- Pivot low on MACD: compare to previous pivot low ---
+if not na(pl)
+    if not na(prevPL)
+        gap = plBar - prevPLBar
+        if gap >= rangeMin and gap <= rangeMax
+            // Regular bullish: price made a lower low, MACD made a higher low
+            if plPrice < prevPLPrice and pl > prevPL
+                regBull := true
+                if showRegBull
+                    line.new(prevPLBar, prevPL, plBar, pl, color=color.green, width=2)
+                    label.new(plBar, pl, "Bull", style=label.style_label_up,
+                              color=color.new(color.green, 20), textcolor=color.white, size=size.tiny)
+                    line.new(prevPLBar, prevPLPrice, plBar, plPrice,
+                             color=color.green, width=2, force_overlay=true)
+            // Hidden bullish: price made a higher low, MACD made a lower low
+            if plPrice > prevPLPrice and pl < prevPL
+                hidBull := true
+                if showHidBull
+                    line.new(prevPLBar, prevPL, plBar, pl,
+                             color=color.aqua, width=2, style=line.style_dashed)
+                    label.new(plBar, pl, "H-Bull", style=label.style_label_up,
+                              color=color.new(color.aqua, 20), textcolor=color.white, size=size.tiny)
+                    line.new(prevPLBar, prevPLPrice, plBar, plPrice,
+                             color=color.aqua, width=2, style=line.style_dashed, force_overlay=true)
+    prevPL      := pl
+    prevPLBar   := plBar
+    prevPLPrice := plPrice
+
+// ============================================================
+// Alerts
+// ============================================================
+alertcondition(regBull and showRegBull, "MACD Regular Bullish Divergence",
+               "MACD Regular Bullish Divergence on {{ticker}} {{interval}}")
+alertcondition(regBear and showRegBear, "MACD Regular Bearish Divergence",
+               "MACD Regular Bearish Divergence on {{ticker}} {{interval}}")
+alertcondition(hidBull and showHidBull, "MACD Hidden Bullish Divergence",
+               "MACD Hidden Bullish Divergence on {{ticker}} {{interval}}")
+alertcondition(hidBear and showHidBear, "MACD Hidden Bearish Divergence",
+               "MACD Hidden Bearish Divergence on {{ticker}} {{interval}}")
