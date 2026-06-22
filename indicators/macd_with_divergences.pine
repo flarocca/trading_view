@@ -36,6 +36,14 @@ showHidBull = input.bool(true, "Hidden Bullish  (price HL / MACD LL)", group="Di
 showHidBear = input.bool(true, "Hidden Bearish  (price LH / MACD HH)", group="Divergence Types")
 
 // ============================================================
+// Inputs: Divergence quality filter
+// ============================================================
+minPriceAtrMult = input.float(0.5, "Min Price Move (× ATR)",  minval=0.0, step=0.1, group="Divergence Quality")
+minMacdStdMult  = input.float(0.5, "Min MACD Move (× stdev)", minval=0.0, step=0.1, group="Divergence Quality")
+atrLen          = input.int(14, "ATR Length",                 minval=1,  group="Divergence Quality")
+macdStdLen      = input.int(50, "MACD Stdev Length",          minval=10, group="Divergence Quality")
+
+// ============================================================
 // Inputs: Debug
 // ============================================================
 showPivots = input.bool(false, "Show All Pivots (debug)", group="Debug")
@@ -59,32 +67,44 @@ plot(hist,       "Histogram", color=histColor, style=plot.style_columns)
 hline(0, "Zero", color=color.new(color.gray, 50))
 
 // ============================================================
-// Pivot detection on MACD line
+// Volatility normalizers for divergence quality filter.
+// Evaluated at the current bar (the bar where the second pivot
+// confirms) so the threshold reflects the current volatility regime.
 // ============================================================
-ph = ta.pivothigh(macd, pivotLeft, pivotRight)
-pl = ta.pivotlow(macd,  pivotLeft, pivotRight)
+atrVal  = ta.atr(atrLen)
+macdStd = ta.stdev(macd, macdStdLen)
 
-// Debug: render every detected pivot as a circle on the MACD pane
-plotshape(showPivots and not na(ph) ? ph : na, "Pivot High (debug)",
-          style=shape.circle, location=location.absolute,
-          color=color.new(color.red,   0), size=size.tiny, offset=-pivotRight)
-plotshape(showPivots and not na(pl) ? pl : na, "Pivot Low (debug)",
-          style=shape.circle, location=location.absolute,
-          color=color.new(color.green, 0), size=size.tiny, offset=-pivotRight)
-
-// Persistent state for previous confirmed pivots
-var float prevPH      = na
-var int   prevPHBar   = na
-var float prevPHPrice = na
-var float prevPL      = na
-var int   prevPLBar   = na
-var float prevPLPrice = na
+// ============================================================
+// Pivot detection on PRICE (canonical reference for swings).
+// MACD value is sampled at the same bar as the price pivot.
+// ============================================================
+ph_price = ta.pivothigh(high, pivotLeft, pivotRight)
+pl_price = ta.pivotlow(low,   pivotLeft, pivotRight)
 
 // When ta.pivot* returns non-na, the actual pivot is `pivotRight` bars back
 phBar   = bar_index - pivotRight
 plBar   = bar_index - pivotRight
 phPrice = high[pivotRight]
 plPrice = low[pivotRight]
+phMacd  = macd[pivotRight]
+plMacd  = macd[pivotRight]
+
+// Debug: render every detected pivot as a circle on the MACD pane,
+// positioned at the MACD value of the price-pivot bar
+plotshape(showPivots and not na(ph_price) ? phMacd : na, "Pivot High (debug)",
+          style=shape.circle, location=location.absolute,
+          color=color.new(color.red,   0), size=size.tiny, offset=-pivotRight)
+plotshape(showPivots and not na(pl_price) ? plMacd : na, "Pivot Low (debug)",
+          style=shape.circle, location=location.absolute,
+          color=color.new(color.green, 0), size=size.tiny, offset=-pivotRight)
+
+// Persistent state for previous confirmed pivots
+var float prevPHMacd  = na
+var int   prevPHBar   = na
+var float prevPHPrice = na
+var float prevPLMacd  = na
+var int   prevPLBar   = na
+var float prevPLPrice = na
 
 // Flags reset each bar
 regBull = false
@@ -93,66 +113,74 @@ hidBull = false
 hidBear = false
 
 // ============================================================
-// Detect divergences and draw lines on both MACD pane and price chart
+// Detect divergences and draw lines on both MACD pane and price chart.
 // Drawing must happen BEFORE prev* state is updated, otherwise prev*
 // already equals the current pivot and the MACD-pane line is zero-length.
 // Price-chart line uses force_overlay=true (Pine v6 feature) to render
 // on the main price chart instead of the MACD pane.
 // ============================================================
 
-// --- Pivot high on MACD: compare to previous pivot high ---
-if not na(ph)
-    if not na(prevPH)
+// --- Pivot high on PRICE: compare to previous price pivot high ---
+if not na(ph_price)
+    if not na(prevPHMacd)
         gap = phBar - prevPHBar
         if gap >= rangeMin and gap <= rangeMax
+            // Quality filter: both legs must show significant movement
+            priceDeltaH = math.abs(phPrice - prevPHPrice)
+            macdDeltaH  = math.abs(phMacd  - prevPHMacd)
+            qualityOkH  = priceDeltaH >= atrVal * minPriceAtrMult and macdDeltaH >= macdStd * minMacdStdMult
             // Regular bearish: price made a higher high, MACD made a lower high
-            if phPrice > prevPHPrice and ph < prevPH
+            if phPrice > prevPHPrice and phMacd < prevPHMacd and qualityOkH
                 regBear := true
                 if showRegBear
-                    line.new(prevPHBar, prevPH, phBar, ph, color=color.red, width=2)
-                    label.new(phBar, ph, "Bear", style=label.style_label_down,
+                    line.new(prevPHBar, prevPHMacd, phBar, phMacd, color=color.red, width=2)
+                    label.new(phBar, phMacd, "Bear", style=label.style_label_down,
                               color=color.new(color.red, 20), textcolor=color.white, size=size.tiny)
                     line.new(prevPHBar, prevPHPrice, phBar, phPrice,
                              color=color.red, width=2, force_overlay=true)
             // Hidden bearish: price made a lower high, MACD made a higher high
-            if phPrice < prevPHPrice and ph > prevPH
+            if phPrice < prevPHPrice and phMacd > prevPHMacd and qualityOkH
                 hidBear := true
                 if showHidBear
-                    line.new(prevPHBar, prevPH, phBar, ph,
+                    line.new(prevPHBar, prevPHMacd, phBar, phMacd,
                              color=color.orange, width=2, style=line.style_dashed)
-                    label.new(phBar, ph, "H-Bear", style=label.style_label_down,
+                    label.new(phBar, phMacd, "H-Bear", style=label.style_label_down,
                               color=color.new(color.orange, 20), textcolor=color.white, size=size.tiny)
                     line.new(prevPHBar, prevPHPrice, phBar, phPrice,
                              color=color.orange, width=2, style=line.style_dashed, force_overlay=true)
-    prevPH      := ph
+    prevPHMacd  := phMacd
     prevPHBar   := phBar
     prevPHPrice := phPrice
 
-// --- Pivot low on MACD: compare to previous pivot low ---
-if not na(pl)
-    if not na(prevPL)
+// --- Pivot low on PRICE: compare to previous price pivot low ---
+if not na(pl_price)
+    if not na(prevPLMacd)
         gap = plBar - prevPLBar
         if gap >= rangeMin and gap <= rangeMax
+            // Quality filter: both legs must show significant movement
+            priceDeltaL = math.abs(plPrice - prevPLPrice)
+            macdDeltaL  = math.abs(plMacd  - prevPLMacd)
+            qualityOkL  = priceDeltaL >= atrVal * minPriceAtrMult and macdDeltaL >= macdStd * minMacdStdMult
             // Regular bullish: price made a lower low, MACD made a higher low
-            if plPrice < prevPLPrice and pl > prevPL
+            if plPrice < prevPLPrice and plMacd > prevPLMacd and qualityOkL
                 regBull := true
                 if showRegBull
-                    line.new(prevPLBar, prevPL, plBar, pl, color=color.green, width=2)
-                    label.new(plBar, pl, "Bull", style=label.style_label_up,
+                    line.new(prevPLBar, prevPLMacd, plBar, plMacd, color=color.green, width=2)
+                    label.new(plBar, plMacd, "Bull", style=label.style_label_up,
                               color=color.new(color.green, 20), textcolor=color.white, size=size.tiny)
                     line.new(prevPLBar, prevPLPrice, plBar, plPrice,
                              color=color.green, width=2, force_overlay=true)
             // Hidden bullish: price made a higher low, MACD made a lower low
-            if plPrice > prevPLPrice and pl < prevPL
+            if plPrice > prevPLPrice and plMacd < prevPLMacd and qualityOkL
                 hidBull := true
                 if showHidBull
-                    line.new(prevPLBar, prevPL, plBar, pl,
+                    line.new(prevPLBar, prevPLMacd, plBar, plMacd,
                              color=color.aqua, width=2, style=line.style_dashed)
-                    label.new(plBar, pl, "H-Bull", style=label.style_label_up,
+                    label.new(plBar, plMacd, "H-Bull", style=label.style_label_up,
                               color=color.new(color.aqua, 20), textcolor=color.white, size=size.tiny)
                     line.new(prevPLBar, prevPLPrice, plBar, plPrice,
                              color=color.aqua, width=2, style=line.style_dashed, force_overlay=true)
-    prevPL      := pl
+    prevPLMacd  := plMacd
     prevPLBar   := plBar
     prevPLPrice := plPrice
 
