@@ -1,0 +1,540 @@
+// Copyright 2026 Facundo La Rocca (© FacuTheRock)
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
+
+//@version=6
+indicator("RSI with Divergences", shorttitle="RSI+Div", precision=2)
+
+// ============================================================
+// Inputs: RSI
+// ============================================================
+rsiLen = input.int(14,   "RSI Length", minval=1, group="RSI")
+rsiSrc = input.source(close, "Source",           group="RSI")
+
+maType = input.string("SMA", "MA Type",
+                      options=["SMA", "EMA", "WMA", "RMA"],
+                      group="RSI MA", display=display.none)
+maLen  = input.int(14, "MA Length", minval=1, group="RSI MA")
+
+// ============================================================
+// Inputs: Divergence detection
+// ============================================================
+pivotLeft      = input.int(5,  "Pivot Left Bars",              minval=1, group="Divergence", display=display.none)
+pivotRight     = input.int(5,  "Pivot Right Bars",             minval=1, group="Divergence", display=display.none)
+tentativeRight = input.int(1,  "Tentative Pivot Right Bars",   minval=1, group="Divergence")
+rangeMin       = input.int(5,  "Min Bars Between Pairs",       minval=1, group="Divergence", display=display.none)
+rangeMax       = input.int(60, "Max Bars Between Pairs",       minval=5, group="Divergence", display=display.none)
+matchTolerance = input.int(5,  "Price/RSI Pivot Match Tolerance (bars)",
+                                                                minval=0, group="Divergence")
+
+showRegBull = input.bool(true, "Regular Bullish (price LL / RSI HL)", group="Divergence Types")
+showRegBear = input.bool(true, "Regular Bearish (price HH / RSI LH)", group="Divergence Types")
+showHidBull = input.bool(true, "Hidden Bullish  (price HL / RSI LL)", group="Divergence Types")
+showHidBear = input.bool(true, "Hidden Bearish  (price LH / RSI HH)", group="Divergence Types")
+
+// ============================================================
+// Inputs: Divergence quality filter
+// ------------------------------------------------------------
+// Both default to 0 (filter off). Raise on lower timeframes if
+// micro-pivot noise becomes a problem.
+// ============================================================
+minPriceAtrMult = input.float(0.0, "Min Price Move (× ATR)", minval=0.0, step=0.1, group="Divergence Quality")
+minRsiPoints    = input.float(0.0, "Min RSI Move (points)",  minval=0.0, step=0.5, group="Divergence Quality")
+atrLen          = input.int(14, "ATR Length",                minval=1,  group="Divergence Quality")
+
+// ============================================================
+// Inputs: Debug
+// ============================================================
+showPivots = input.bool(false, "Show All Pivots (debug)", group="Debug")
+
+// ============================================================
+// RSI + RSI-based MA
+// ============================================================
+rsi = ta.rsi(rsiSrc, rsiLen)
+
+rsiMA = switch maType
+    "SMA" => ta.sma(rsi, maLen)
+    "EMA" => ta.ema(rsi, maLen)
+    "WMA" => ta.wma(rsi, maLen)
+    "RMA" => ta.rma(rsi, maLen)
+
+plot(rsi,   "RSI",          color=color.new(#7E57C2, 0))
+plot(rsiMA, "RSI-based MA", color=color.new(#FFB300, 0))
+
+upperBand = hline(70, "Upper Band",  color=color.new(#787B86, 40), linestyle=hline.style_dashed)
+midLine   = hline(50, "Middle Band", color=color.new(#787B86, 60), linestyle=hline.style_dotted)
+lowerBand = hline(30, "Lower Band",  color=color.new(#787B86, 40), linestyle=hline.style_dashed)
+fill(upperBand, lowerBand, color=color.new(#7E57C2, 92), title="RSI Background")
+
+atrVal = ta.atr(atrLen)
+
+// ============================================================
+// CONFIRMED pivot detection
+// ============================================================
+phPriceRaw = ta.pivothigh(high, pivotLeft, pivotRight)
+plPriceRaw = ta.pivotlow(low,   pivotLeft, pivotRight)
+phRsiRaw   = ta.pivothigh(rsi,  pivotLeft, pivotRight)
+plRsiRaw   = ta.pivotlow(rsi,   pivotLeft, pivotRight)
+
+newPricePHBar = not na(phPriceRaw) ? bar_index - pivotRight : na
+newPricePHVal = not na(phPriceRaw) ? high[pivotRight]       : na
+newPricePLBar = not na(plPriceRaw) ? bar_index - pivotRight : na
+newPricePLVal = not na(plPriceRaw) ? low[pivotRight]        : na
+newRsiPHBar   = not na(phRsiRaw)   ? bar_index - pivotRight : na
+newRsiPHVal   = not na(phRsiRaw)   ? rsi[pivotRight]        : na
+newRsiPLBar   = not na(plRsiRaw)   ? bar_index - pivotRight : na
+newRsiPLVal   = not na(plRsiRaw)   ? rsi[pivotRight]        : na
+
+// ============================================================
+// TENTATIVE pivot detection
+// ============================================================
+tPhPriceRaw = ta.pivothigh(high, pivotLeft, tentativeRight)
+tPlPriceRaw = ta.pivotlow(low,   pivotLeft, tentativeRight)
+tPhRsiRaw   = ta.pivothigh(rsi,  pivotLeft, tentativeRight)
+tPlRsiRaw   = ta.pivotlow(rsi,   pivotLeft, tentativeRight)
+
+tNewPricePHBar = not na(tPhPriceRaw) ? bar_index - tentativeRight : na
+tNewPricePHVal = not na(tPhPriceRaw) ? high[tentativeRight]       : na
+tNewPricePLBar = not na(tPlPriceRaw) ? bar_index - tentativeRight : na
+tNewPricePLVal = not na(tPlPriceRaw) ? low[tentativeRight]        : na
+tNewRsiPHBar   = not na(tPhRsiRaw)   ? bar_index - tentativeRight : na
+tNewRsiPHVal   = not na(tPhRsiRaw)   ? rsi[tentativeRight]        : na
+tNewRsiPLBar   = not na(tPlRsiRaw)   ? bar_index - tentativeRight : na
+tNewRsiPLVal   = not na(tPlRsiRaw)   ? rsi[tentativeRight]        : na
+
+// ============================================================
+// Debug plotshapes on the RSI pane
+//   Confirmed price: xcross (red=high, green=low)
+//   Confirmed RSI:   circle (red=high, green=low)
+//   Tentative price: triangle (down=high, up=low)
+//   Tentative RSI:   diamond (red=high, green=low)
+// ============================================================
+plotshape(showPivots and not na(newPricePHBar) ? rsi[pivotRight] : na, "Price PH (debug)",
+          style=shape.xcross, location=location.absolute,
+          color=color.new(color.red,   0), size=size.tiny, offset=-pivotRight)
+plotshape(showPivots and not na(newPricePLBar) ? rsi[pivotRight] : na, "Price PL (debug)",
+          style=shape.xcross, location=location.absolute,
+          color=color.new(color.green, 0), size=size.tiny, offset=-pivotRight)
+plotshape(showPivots and not na(newRsiPHBar)   ? rsi[pivotRight] : na, "RSI PH (debug)",
+          style=shape.circle, location=location.absolute,
+          color=color.new(color.red,   0), size=size.tiny, offset=-pivotRight)
+plotshape(showPivots and not na(newRsiPLBar)   ? rsi[pivotRight] : na, "RSI PL (debug)",
+          style=shape.circle, location=location.absolute,
+          color=color.new(color.green, 0), size=size.tiny, offset=-pivotRight)
+
+plotshape(showPivots and not na(tNewPricePHBar) ? rsi[tentativeRight] : na, "Tent Price PH (debug)",
+          style=shape.triangledown, location=location.absolute,
+          color=color.new(color.red,   0), size=size.tiny, offset=-tentativeRight)
+plotshape(showPivots and not na(tNewPricePLBar) ? rsi[tentativeRight] : na, "Tent Price PL (debug)",
+          style=shape.triangleup,   location=location.absolute,
+          color=color.new(color.green, 0), size=size.tiny, offset=-tentativeRight)
+plotshape(showPivots and not na(tNewRsiPHBar)   ? rsi[tentativeRight] : na, "Tent RSI PH (debug)",
+          style=shape.diamond, location=location.absolute,
+          color=color.new(color.red,   0), size=size.tiny, offset=-tentativeRight)
+plotshape(showPivots and not na(tNewRsiPLBar)   ? rsi[tentativeRight] : na, "Tent RSI PL (debug)",
+          style=shape.diamond, location=location.absolute,
+          color=color.new(color.green, 0), size=size.tiny, offset=-tentativeRight)
+
+// ============================================================
+// STATE: Confirmed waiting slots
+// ============================================================
+var int   waitPricePHBar = na
+var float waitPricePHVal = na
+var int   waitRsiPHBar   = na
+var float waitRsiPHVal   = na
+
+var int   waitPricePLBar = na
+var float waitPricePLVal = na
+var int   waitRsiPLBar   = na
+var float waitRsiPLVal   = na
+
+// STATE: Last two confirmed pairs (current + previous)
+var int   currPHPriceBar = na
+var float currPHPriceVal = na
+var int   currPHRsiBar   = na
+var float currPHRsiVal   = na
+var int   prevPHPriceBar = na
+var float prevPHPriceVal = na
+var int   prevPHRsiBar   = na
+var float prevPHRsiVal   = na
+
+var int   currPLPriceBar = na
+var float currPLPriceVal = na
+var int   currPLRsiBar   = na
+var float currPLRsiVal   = na
+var int   prevPLPriceBar = na
+var float prevPLPriceVal = na
+var int   prevPLRsiBar   = na
+var float prevPLRsiVal   = na
+
+// STATE: Tentative waiting slots
+var int   tWaitPricePHBar = na
+var float tWaitPricePHVal = na
+var int   tWaitRsiPHBar   = na
+var float tWaitRsiPHVal   = na
+
+var int   tWaitPricePLBar = na
+var float tWaitPricePLVal = na
+var int   tWaitRsiPLBar   = na
+var float tWaitRsiPLVal   = na
+
+// STATE: Active tentative divergence line references (for deletion)
+var line tPHLineRsi   = na
+var line tPHLinePrice = na
+var line tPLLineRsi   = na
+var line tPLLinePrice = na
+
+// Divergence flags (reset each bar)
+regBull  = false
+regBear  = false
+hidBull  = false
+hidBear  = false
+tRegBull = false
+tRegBear = false
+tHidBull = false
+tHidBear = false
+
+// ============================================================
+// CONFIRMED HIGHS: pair, and on completion clean up tentatives
+// ============================================================
+pairedH   = false
+pairedHPB = 0
+pairedHPV = 0.0
+pairedHRB = 0
+pairedHRV = 0.0
+
+if not na(newPricePHBar) and not na(newRsiPHBar)
+    pairedH := true
+    pairedHPB := newPricePHBar
+    pairedHPV := newPricePHVal
+    pairedHRB := newRsiPHBar
+    pairedHRV := newRsiPHVal
+
+if not pairedH and not na(newPricePHBar) and not na(waitRsiPHBar) and math.abs(newPricePHBar - waitRsiPHBar) <= matchTolerance
+    pairedH := true
+    pairedHPB := newPricePHBar
+    pairedHPV := newPricePHVal
+    pairedHRB := waitRsiPHBar
+    pairedHRV := waitRsiPHVal
+
+if not pairedH and not na(newRsiPHBar) and not na(waitPricePHBar) and math.abs(newRsiPHBar - waitPricePHBar) <= matchTolerance
+    pairedH := true
+    pairedHPB := waitPricePHBar
+    pairedHPV := waitPricePHVal
+    pairedHRB := newRsiPHBar
+    pairedHRV := newRsiPHVal
+
+if pairedH
+    // Confirmed pair completed: tentative for this polarity is now moot
+    if not na(tPHLineRsi)
+        line.delete(tPHLineRsi)
+        tPHLineRsi := na
+    if not na(tPHLinePrice)
+        line.delete(tPHLinePrice)
+        tPHLinePrice := na
+    tWaitPricePHBar := na
+    tWaitPricePHVal := na
+    tWaitRsiPHBar   := na
+    tWaitRsiPHVal   := na
+    // Shift curr → prev, install new confirmed pair
+    prevPHPriceBar := currPHPriceBar
+    prevPHPriceVal := currPHPriceVal
+    prevPHRsiBar   := currPHRsiBar
+    prevPHRsiVal   := currPHRsiVal
+    currPHPriceBar := pairedHPB
+    currPHPriceVal := pairedHPV
+    currPHRsiBar   := pairedHRB
+    currPHRsiVal   := pairedHRV
+    waitPricePHBar := na
+    waitPricePHVal := na
+    waitRsiPHBar   := na
+    waitRsiPHVal   := na
+    // Evaluate divergence vs previous confirmed pair
+    if not na(prevPHPriceVal)
+        gapH = currPHPriceBar - prevPHPriceBar
+        if gapH >= rangeMin and gapH <= rangeMax
+            priceDeltaH = math.abs(currPHPriceVal - prevPHPriceVal)
+            rsiDeltaH   = math.abs(currPHRsiVal   - prevPHRsiVal)
+            qualityOkH  = priceDeltaH >= atrVal * minPriceAtrMult and rsiDeltaH >= minRsiPoints
+            // Regular bearish: price HH / RSI LH → solid red
+            if currPHPriceVal > prevPHPriceVal and currPHRsiVal < prevPHRsiVal and qualityOkH
+                regBear := true
+                if showRegBear
+                    line.new(prevPHRsiBar, prevPHRsiVal, currPHRsiBar, currPHRsiVal,
+                             color=color.red, width=2)
+                    line.new(prevPHPriceBar, prevPHPriceVal, currPHPriceBar, currPHPriceVal,
+                             color=color.red, width=2, force_overlay=true)
+            // Hidden bearish: price LH / RSI HH → solid orange
+            if currPHPriceVal < prevPHPriceVal and currPHRsiVal > prevPHRsiVal and qualityOkH
+                hidBear := true
+                if showHidBear
+                    line.new(prevPHRsiBar, prevPHRsiVal, currPHRsiBar, currPHRsiVal,
+                             color=color.orange, width=2)
+                    line.new(prevPHPriceBar, prevPHPriceVal, currPHPriceBar, currPHPriceVal,
+                             color=color.orange, width=2, force_overlay=true)
+else
+    if not na(newPricePHBar)
+        waitPricePHBar := newPricePHBar
+        waitPricePHVal := newPricePHVal
+    if not na(newRsiPHBar)
+        waitRsiPHBar := newRsiPHBar
+        waitRsiPHVal := newRsiPHVal
+
+// ============================================================
+// CONFIRMED LOWS: mirror of highs
+// ============================================================
+pairedL   = false
+pairedLPB = 0
+pairedLPV = 0.0
+pairedLRB = 0
+pairedLRV = 0.0
+
+if not na(newPricePLBar) and not na(newRsiPLBar)
+    pairedL := true
+    pairedLPB := newPricePLBar
+    pairedLPV := newPricePLVal
+    pairedLRB := newRsiPLBar
+    pairedLRV := newRsiPLVal
+
+if not pairedL and not na(newPricePLBar) and not na(waitRsiPLBar) and math.abs(newPricePLBar - waitRsiPLBar) <= matchTolerance
+    pairedL := true
+    pairedLPB := newPricePLBar
+    pairedLPV := newPricePLVal
+    pairedLRB := waitRsiPLBar
+    pairedLRV := waitRsiPLVal
+
+if not pairedL and not na(newRsiPLBar) and not na(waitPricePLBar) and math.abs(newRsiPLBar - waitPricePLBar) <= matchTolerance
+    pairedL := true
+    pairedLPB := waitPricePLBar
+    pairedLPV := waitPricePLVal
+    pairedLRB := newRsiPLBar
+    pairedLRV := newRsiPLVal
+
+if pairedL
+    if not na(tPLLineRsi)
+        line.delete(tPLLineRsi)
+        tPLLineRsi := na
+    if not na(tPLLinePrice)
+        line.delete(tPLLinePrice)
+        tPLLinePrice := na
+    tWaitPricePLBar := na
+    tWaitPricePLVal := na
+    tWaitRsiPLBar   := na
+    tWaitRsiPLVal   := na
+    prevPLPriceBar := currPLPriceBar
+    prevPLPriceVal := currPLPriceVal
+    prevPLRsiBar   := currPLRsiBar
+    prevPLRsiVal   := currPLRsiVal
+    currPLPriceBar := pairedLPB
+    currPLPriceVal := pairedLPV
+    currPLRsiBar   := pairedLRB
+    currPLRsiVal   := pairedLRV
+    waitPricePLBar := na
+    waitPricePLVal := na
+    waitRsiPLBar   := na
+    waitRsiPLVal   := na
+    if not na(prevPLPriceVal)
+        gapL = currPLPriceBar - prevPLPriceBar
+        if gapL >= rangeMin and gapL <= rangeMax
+            priceDeltaL = math.abs(currPLPriceVal - prevPLPriceVal)
+            rsiDeltaL   = math.abs(currPLRsiVal   - prevPLRsiVal)
+            qualityOkL  = priceDeltaL >= atrVal * minPriceAtrMult and rsiDeltaL >= minRsiPoints
+            // Regular bullish: price LL / RSI HL → solid green
+            if currPLPriceVal < prevPLPriceVal and currPLRsiVal > prevPLRsiVal and qualityOkL
+                regBull := true
+                if showRegBull
+                    line.new(prevPLRsiBar, prevPLRsiVal, currPLRsiBar, currPLRsiVal,
+                             color=color.green, width=2)
+                    line.new(prevPLPriceBar, prevPLPriceVal, currPLPriceBar, currPLPriceVal,
+                             color=color.green, width=2, force_overlay=true)
+            // Hidden bullish: price HL / RSI LL → solid cyan (aqua)
+            if currPLPriceVal > prevPLPriceVal and currPLRsiVal < prevPLRsiVal and qualityOkL
+                hidBull := true
+                if showHidBull
+                    line.new(prevPLRsiBar, prevPLRsiVal, currPLRsiBar, currPLRsiVal,
+                             color=color.aqua, width=2)
+                    line.new(prevPLPriceBar, prevPLPriceVal, currPLPriceBar, currPLPriceVal,
+                             color=color.aqua, width=2, force_overlay=true)
+else
+    if not na(newPricePLBar)
+        waitPricePLBar := newPricePLBar
+        waitPricePLVal := newPricePLVal
+    if not na(newRsiPLBar)
+        waitRsiPLBar := newRsiPLBar
+        waitRsiPLVal := newRsiPLVal
+
+// ============================================================
+// TENTATIVE HIGHS: pair, compare against LAST CONFIRMED (currPH...)
+// ============================================================
+tPairedH   = false
+tPairedHPB = 0
+tPairedHPV = 0.0
+tPairedHRB = 0
+tPairedHRV = 0.0
+
+if not na(tNewPricePHBar) and not na(tNewRsiPHBar)
+    tPairedH := true
+    tPairedHPB := tNewPricePHBar
+    tPairedHPV := tNewPricePHVal
+    tPairedHRB := tNewRsiPHBar
+    tPairedHRV := tNewRsiPHVal
+
+if not tPairedH and not na(tNewPricePHBar) and not na(tWaitRsiPHBar) and math.abs(tNewPricePHBar - tWaitRsiPHBar) <= matchTolerance
+    tPairedH := true
+    tPairedHPB := tNewPricePHBar
+    tPairedHPV := tNewPricePHVal
+    tPairedHRB := tWaitRsiPHBar
+    tPairedHRV := tWaitRsiPHVal
+
+if not tPairedH and not na(tNewRsiPHBar) and not na(tWaitPricePHBar) and math.abs(tNewRsiPHBar - tWaitPricePHBar) <= matchTolerance
+    tPairedH := true
+    tPairedHPB := tWaitPricePHBar
+    tPairedHPV := tWaitPricePHVal
+    tPairedHRB := tNewRsiPHBar
+    tPairedHRV := tNewRsiPHVal
+
+// If ANY new tentative high fired, previously drawn tentative divergence is stale
+if (not na(tNewPricePHBar) or not na(tNewRsiPHBar))
+    if not na(tPHLineRsi)
+        line.delete(tPHLineRsi)
+        tPHLineRsi := na
+    if not na(tPHLinePrice)
+        line.delete(tPHLinePrice)
+        tPHLinePrice := na
+
+if tPairedH
+    tWaitPricePHBar := na
+    tWaitPricePHVal := na
+    tWaitRsiPHBar   := na
+    tWaitRsiPHVal   := na
+    // Compare against last CONFIRMED pair (currPH)
+    if not na(currPHPriceVal)
+        tGapH = tPairedHPB - currPHPriceBar
+        if tGapH >= rangeMin and tGapH <= rangeMax
+            tPriceDeltaH = math.abs(tPairedHPV - currPHPriceVal)
+            tRsiDeltaH   = math.abs(tPairedHRV - currPHRsiVal)
+            tQualityOkH  = tPriceDeltaH >= atrVal * minPriceAtrMult and tRsiDeltaH >= minRsiPoints
+            // Tentative regular bearish: price HH / RSI LH → dashed red
+            if tPairedHPV > currPHPriceVal and tPairedHRV < currPHRsiVal and tQualityOkH
+                tRegBear := true
+                if showRegBear
+                    tPHLineRsi := line.new(currPHRsiBar, currPHRsiVal, tPairedHRB, tPairedHRV,
+                                           color=color.red, width=2, style=line.style_dashed)
+                    tPHLinePrice := line.new(currPHPriceBar, currPHPriceVal, tPairedHPB, tPairedHPV,
+                                             color=color.red, width=2, style=line.style_dashed, force_overlay=true)
+            // Tentative hidden bearish: price LH / RSI HH → dashed orange
+            if tPairedHPV < currPHPriceVal and tPairedHRV > currPHRsiVal and tQualityOkH
+                tHidBear := true
+                if showHidBear
+                    tPHLineRsi := line.new(currPHRsiBar, currPHRsiVal, tPairedHRB, tPairedHRV,
+                                           color=color.orange, width=2, style=line.style_dashed)
+                    tPHLinePrice := line.new(currPHPriceBar, currPHPriceVal, tPairedHPB, tPairedHPV,
+                                             color=color.orange, width=2, style=line.style_dashed, force_overlay=true)
+else
+    if not na(tNewPricePHBar)
+        tWaitPricePHBar := tNewPricePHBar
+        tWaitPricePHVal := tNewPricePHVal
+    if not na(tNewRsiPHBar)
+        tWaitRsiPHBar := tNewRsiPHBar
+        tWaitRsiPHVal := tNewRsiPHVal
+
+// ============================================================
+// TENTATIVE LOWS: mirror of highs
+// ============================================================
+tPairedL   = false
+tPairedLPB = 0
+tPairedLPV = 0.0
+tPairedLRB = 0
+tPairedLRV = 0.0
+
+if not na(tNewPricePLBar) and not na(tNewRsiPLBar)
+    tPairedL := true
+    tPairedLPB := tNewPricePLBar
+    tPairedLPV := tNewPricePLVal
+    tPairedLRB := tNewRsiPLBar
+    tPairedLRV := tNewRsiPLVal
+
+if not tPairedL and not na(tNewPricePLBar) and not na(tWaitRsiPLBar) and math.abs(tNewPricePLBar - tWaitRsiPLBar) <= matchTolerance
+    tPairedL := true
+    tPairedLPB := tNewPricePLBar
+    tPairedLPV := tNewPricePLVal
+    tPairedLRB := tWaitRsiPLBar
+    tPairedLRV := tWaitRsiPLVal
+
+if not tPairedL and not na(tNewRsiPLBar) and not na(tWaitPricePLBar) and math.abs(tNewRsiPLBar - tWaitPricePLBar) <= matchTolerance
+    tPairedL := true
+    tPairedLPB := tWaitPricePLBar
+    tPairedLPV := tWaitPricePLVal
+    tPairedLRB := tNewRsiPLBar
+    tPairedLRV := tNewRsiPLVal
+
+if (not na(tNewPricePLBar) or not na(tNewRsiPLBar))
+    if not na(tPLLineRsi)
+        line.delete(tPLLineRsi)
+        tPLLineRsi := na
+    if not na(tPLLinePrice)
+        line.delete(tPLLinePrice)
+        tPLLinePrice := na
+
+if tPairedL
+    tWaitPricePLBar := na
+    tWaitPricePLVal := na
+    tWaitRsiPLBar   := na
+    tWaitRsiPLVal   := na
+    if not na(currPLPriceVal)
+        tGapL = tPairedLPB - currPLPriceBar
+        if tGapL >= rangeMin and tGapL <= rangeMax
+            tPriceDeltaL = math.abs(tPairedLPV - currPLPriceVal)
+            tRsiDeltaL   = math.abs(tPairedLRV - currPLRsiVal)
+            tQualityOkL  = tPriceDeltaL >= atrVal * minPriceAtrMult and tRsiDeltaL >= minRsiPoints
+            // Tentative regular bullish: price LL / RSI HL → dashed green
+            if tPairedLPV < currPLPriceVal and tPairedLRV > currPLRsiVal and tQualityOkL
+                tRegBull := true
+                if showRegBull
+                    tPLLineRsi := line.new(currPLRsiBar, currPLRsiVal, tPairedLRB, tPairedLRV,
+                                           color=color.green, width=2, style=line.style_dashed)
+                    tPLLinePrice := line.new(currPLPriceBar, currPLPriceVal, tPairedLPB, tPairedLPV,
+                                             color=color.green, width=2, style=line.style_dashed, force_overlay=true)
+            // Tentative hidden bullish: price HL / RSI LL → dashed cyan (aqua)
+            if tPairedLPV > currPLPriceVal and tPairedLRV < currPLRsiVal and tQualityOkL
+                tHidBull := true
+                if showHidBull
+                    tPLLineRsi := line.new(currPLRsiBar, currPLRsiVal, tPairedLRB, tPairedLRV,
+                                           color=color.aqua, width=2, style=line.style_dashed)
+                    tPLLinePrice := line.new(currPLPriceBar, currPLPriceVal, tPairedLPB, tPairedLPV,
+                                             color=color.aqua, width=2, style=line.style_dashed, force_overlay=true)
+else
+    if not na(tNewPricePLBar)
+        tWaitPricePLBar := tNewPricePLBar
+        tWaitPricePLVal := tNewPricePLVal
+    if not na(tNewRsiPLBar)
+        tWaitRsiPLBar := tNewRsiPLBar
+        tWaitRsiPLVal := tNewRsiPLVal
+
+// ============================================================
+// Alerts (8 total: 4 confirmed + 4 tentative)
+// ============================================================
+alertcondition(regBull  and showRegBull, "RSI Regular Bullish Divergence",
+               "RSI Regular Bullish Divergence on {{ticker}} {{interval}}")
+alertcondition(regBear  and showRegBear, "RSI Regular Bearish Divergence",
+               "RSI Regular Bearish Divergence on {{ticker}} {{interval}}")
+alertcondition(hidBull  and showHidBull, "RSI Hidden Bullish Divergence",
+               "RSI Hidden Bullish Divergence on {{ticker}} {{interval}}")
+alertcondition(hidBear  and showHidBear, "RSI Hidden Bearish Divergence",
+               "RSI Hidden Bearish Divergence on {{ticker}} {{interval}}")
+alertcondition(tRegBull and showRegBull, "RSI Tentative Regular Bullish Divergence",
+               "Tentative RSI Regular Bullish Divergence on {{ticker}} {{interval}}")
+alertcondition(tRegBear and showRegBear, "RSI Tentative Regular Bearish Divergence",
+               "Tentative RSI Regular Bearish Divergence on {{ticker}} {{interval}}")
+alertcondition(tHidBull and showHidBull, "RSI Tentative Hidden Bullish Divergence",
+               "Tentative RSI Hidden Bullish Divergence on {{ticker}} {{interval}}")
+alertcondition(tHidBear and showHidBear, "RSI Tentative Hidden Bearish Divergence",
+               "Tentative RSI Hidden Bearish Divergence on {{ticker}} {{interval}}")
