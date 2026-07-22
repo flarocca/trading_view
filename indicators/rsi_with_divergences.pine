@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
 
 //@version=6
-indicator("RSI with Divergences", shorttitle="RSI+Div", precision=2)
+indicator("RSI with Divergences", shorttitle="RSI+Div", precision=2, max_bars_back=500)
 
 // ============================================================
 // Inputs: RSI
@@ -32,7 +32,7 @@ pivotRight     = input.int(5,  "Pivot Right Bars",             minval=1, group="
 tentativeRight = input.int(1,  "Tentative Pivot Right Bars",   minval=1, group="Divergence")
 rangeMin       = input.int(5,  "Min Bars Between Pairs",       minval=1, group="Divergence", display=display.none)
 rangeMax       = input.int(60, "Max Bars Between Pairs",       minval=5, group="Divergence", display=display.none)
-matchTolerance = input.int(5,  "Price/RSI Pivot Match Tolerance (bars)",
+matchTolerance = input.int(10, "Price/RSI Pivot Match Tolerance (bars)",
                                                                 minval=0, group="Divergence")
 
 showRegBull = input.bool(true, "Regular Bullish (price LL / RSI HL)", group="Divergence Types")
@@ -42,13 +42,20 @@ showHidBear = input.bool(true, "Hidden Bearish  (price LH / RSI HH)", group="Div
 
 // ============================================================
 // Inputs: Divergence quality filter
-// ------------------------------------------------------------
-// Both default to 0 (filter off). Raise on lower timeframes if
-// micro-pivot noise becomes a problem.
+// Controls the minimum magnitude between A and B pivots.
 // ============================================================
 minPriceAtrMult = input.float(0.0, "Min Price Move (× ATR)", minval=0.0, step=0.1, group="Divergence Quality")
 minRsiPoints    = input.float(0.0, "Min RSI Move (points)",  minval=0.0, step=0.5, group="Divergence Quality")
 atrLen          = input.int(14, "ATR Length",                minval=1,  group="Divergence Quality")
+
+// ============================================================
+// Inputs: Path integrity
+// An interior peak/trough between A and B only invalidates the
+// divergence if it exceeds the reference pivot by more than the
+// path threshold. Small overshoots are treated as noise.
+// ============================================================
+pathPriceAtrMult = input.float(0.3, "Path Invalidation — Price Excess (× ATR)", minval=0.0, step=0.1, group="Path Integrity")
+pathRsiPoints    = input.float(3.0, "Path Invalidation — RSI Excess (points)",  minval=0.0, step=0.5, group="Path Integrity")
 
 // ============================================================
 // Inputs: Debug
@@ -111,11 +118,7 @@ tNewRsiPLBar   = not na(tPlRsiRaw)   ? bar_index - tentativeRight : na
 tNewRsiPLVal   = not na(tPlRsiRaw)   ? rsi[tentativeRight]        : na
 
 // ============================================================
-// Debug plotshapes on the RSI pane
-//   Confirmed price: xcross (red=high, green=low)
-//   Confirmed RSI:   circle (red=high, green=low)
-//   Tentative price: triangle (down=high, up=low)
-//   Tentative RSI:   diamond (red=high, green=low)
+// Debug plotshapes
 // ============================================================
 plotshape(showPivots and not na(newPricePHBar) ? rsi[pivotRight] : na, "Price PH (debug)",
           style=shape.xcross, location=location.absolute,
@@ -156,7 +159,7 @@ var float waitPricePLVal = na
 var int   waitRsiPLBar   = na
 var float waitRsiPLVal   = na
 
-// STATE: Last two confirmed pairs (current + previous)
+// STATE: Last two confirmed pairs
 var int   currPHPriceBar = na
 var float currPHPriceVal = na
 var int   currPHRsiBar   = na
@@ -186,7 +189,7 @@ var float tWaitPricePLVal = na
 var int   tWaitRsiPLBar   = na
 var float tWaitRsiPLVal   = na
 
-// STATE: Active tentative divergence line references (for deletion)
+// STATE: Active tentative line references
 var line tPHLineRsi   = na
 var line tPHLinePrice = na
 var line tPLLineRsi   = na
@@ -203,7 +206,7 @@ tHidBull = false
 tHidBear = false
 
 // ============================================================
-// CONFIRMED HIGHS: pair, and on completion clean up tentatives
+// CONFIRMED HIGHS
 // ============================================================
 pairedH   = false
 pairedHPB = 0
@@ -233,7 +236,6 @@ if not pairedH and not na(newRsiPHBar) and not na(waitPricePHBar) and math.abs(n
     pairedHRV := newRsiPHVal
 
 if pairedH
-    // Confirmed pair completed: tentative for this polarity is now moot
     if not na(tPHLineRsi)
         line.delete(tPHLineRsi)
         tPHLineRsi := na
@@ -244,7 +246,6 @@ if pairedH
     tWaitPricePHVal := na
     tWaitRsiPHBar   := na
     tWaitRsiPHVal   := na
-    // Shift curr → prev, install new confirmed pair
     prevPHPriceBar := currPHPriceBar
     prevPHPriceVal := currPHPriceVal
     prevPHRsiBar   := currPHRsiBar
@@ -257,29 +258,56 @@ if pairedH
     waitPricePHVal := na
     waitRsiPHBar   := na
     waitRsiPHVal   := na
-    // Evaluate divergence vs previous confirmed pair
     if not na(prevPHPriceVal)
         gapH = currPHPriceBar - prevPHPriceBar
         if gapH >= rangeMin and gapH <= rangeMax
             priceDeltaH = math.abs(currPHPriceVal - prevPHPriceVal)
             rsiDeltaH   = math.abs(currPHRsiVal   - prevPHRsiVal)
             qualityOkH  = priceDeltaH >= atrVal * minPriceAtrMult and rsiDeltaH >= minRsiPoints
-            // Regular bearish: price HH / RSI LH → solid red
+            // Path integrity: static loop with break for correct buffer allocation
+            float priceMaxInterior = na
+            float rsiMaxInterior   = na
+            if currPHPriceBar - prevPHPriceBar > 1
+                for i = 1 to 500
+                    int checkBar = prevPHPriceBar + i
+                    if checkBar >= currPHPriceBar
+                        break
+                    int offset = bar_index - checkBar
+                    if offset >= 0
+                        float pv = high[offset]
+                        if na(priceMaxInterior) or pv > priceMaxInterior
+                            priceMaxInterior := pv
+            if currPHRsiBar - prevPHRsiBar > 1
+                for i = 1 to 500
+                    int checkBar = prevPHRsiBar + i
+                    if checkBar >= currPHRsiBar
+                        break
+                    int offset = bar_index - checkBar
+                    if offset >= 0
+                        float rv = rsi[offset]
+                        if na(rsiMaxInterior) or rv > rsiMaxInterior
+                            rsiMaxInterior := rv
+            priceExcess = atrVal * pathPriceAtrMult
+            // Regular bearish: reference HH = currPH price, reference LH = prevPH rsi
             if currPHPriceVal > prevPHPriceVal and currPHRsiVal < prevPHRsiVal and qualityOkH
-                regBear := true
-                if showRegBear
-                    line.new(prevPHRsiBar, prevPHRsiVal, currPHRsiBar, currPHRsiVal,
-                             color=color.red, width=2)
-                    line.new(prevPHPriceBar, prevPHPriceVal, currPHPriceBar, currPHPriceVal,
-                             color=color.red, width=2, force_overlay=true)
-            // Hidden bearish: price LH / RSI HH → solid orange
+                pathOkRegBearH = (na(priceMaxInterior) or priceMaxInterior <= currPHPriceVal + priceExcess) and (na(rsiMaxInterior) or rsiMaxInterior <= prevPHRsiVal + pathRsiPoints)
+                if pathOkRegBearH
+                    regBear := true
+                    if showRegBear
+                        line.new(prevPHRsiBar, prevPHRsiVal, currPHRsiBar, currPHRsiVal,
+                                 color=color.red, width=2)
+                        line.new(prevPHPriceBar, prevPHPriceVal, currPHPriceBar, currPHPriceVal,
+                                 color=color.red, width=2, force_overlay=true)
+            // Hidden bearish: reference LH = currPH price, reference HH = currPH rsi
             if currPHPriceVal < prevPHPriceVal and currPHRsiVal > prevPHRsiVal and qualityOkH
-                hidBear := true
-                if showHidBear
-                    line.new(prevPHRsiBar, prevPHRsiVal, currPHRsiBar, currPHRsiVal,
-                             color=color.orange, width=2)
-                    line.new(prevPHPriceBar, prevPHPriceVal, currPHPriceBar, currPHPriceVal,
-                             color=color.orange, width=2, force_overlay=true)
+                pathOkHidBearH = (na(priceMaxInterior) or priceMaxInterior <= prevPHPriceVal + priceExcess) and (na(rsiMaxInterior) or rsiMaxInterior <= currPHRsiVal + pathRsiPoints)
+                if pathOkHidBearH
+                    hidBear := true
+                    if showHidBear
+                        line.new(prevPHRsiBar, prevPHRsiVal, currPHRsiBar, currPHRsiVal,
+                                 color=color.orange, width=2)
+                        line.new(prevPHPriceBar, prevPHPriceVal, currPHPriceBar, currPHPriceVal,
+                                 color=color.orange, width=2, force_overlay=true)
 else
     if not na(newPricePHBar)
         waitPricePHBar := newPricePHBar
@@ -289,7 +317,7 @@ else
         waitRsiPHVal := newRsiPHVal
 
 // ============================================================
-// CONFIRMED LOWS: mirror of highs
+// CONFIRMED LOWS
 // ============================================================
 pairedL   = false
 pairedLPB = 0
@@ -347,22 +375,49 @@ if pairedL
             priceDeltaL = math.abs(currPLPriceVal - prevPLPriceVal)
             rsiDeltaL   = math.abs(currPLRsiVal   - prevPLRsiVal)
             qualityOkL  = priceDeltaL >= atrVal * minPriceAtrMult and rsiDeltaL >= minRsiPoints
-            // Regular bullish: price LL / RSI HL → solid green
+            float priceMinInterior = na
+            float rsiMinInterior   = na
+            if currPLPriceBar - prevPLPriceBar > 1
+                for i = 1 to 500
+                    int checkBar = prevPLPriceBar + i
+                    if checkBar >= currPLPriceBar
+                        break
+                    int offset = bar_index - checkBar
+                    if offset >= 0
+                        float pv = low[offset]
+                        if na(priceMinInterior) or pv < priceMinInterior
+                            priceMinInterior := pv
+            if currPLRsiBar - prevPLRsiBar > 1
+                for i = 1 to 500
+                    int checkBar = prevPLRsiBar + i
+                    if checkBar >= currPLRsiBar
+                        break
+                    int offset = bar_index - checkBar
+                    if offset >= 0
+                        float rv = rsi[offset]
+                        if na(rsiMinInterior) or rv < rsiMinInterior
+                            rsiMinInterior := rv
+            priceExcessL = atrVal * pathPriceAtrMult
+            // Regular bullish: reference LL = currPL price, reference HL = prevPL rsi
             if currPLPriceVal < prevPLPriceVal and currPLRsiVal > prevPLRsiVal and qualityOkL
-                regBull := true
-                if showRegBull
-                    line.new(prevPLRsiBar, prevPLRsiVal, currPLRsiBar, currPLRsiVal,
-                             color=color.green, width=2)
-                    line.new(prevPLPriceBar, prevPLPriceVal, currPLPriceBar, currPLPriceVal,
-                             color=color.green, width=2, force_overlay=true)
-            // Hidden bullish: price HL / RSI LL → solid cyan (aqua)
+                pathOkRegBullL = (na(priceMinInterior) or priceMinInterior >= currPLPriceVal - priceExcessL) and (na(rsiMinInterior) or rsiMinInterior >= prevPLRsiVal - pathRsiPoints)
+                if pathOkRegBullL
+                    regBull := true
+                    if showRegBull
+                        line.new(prevPLRsiBar, prevPLRsiVal, currPLRsiBar, currPLRsiVal,
+                                 color=color.green, width=2)
+                        line.new(prevPLPriceBar, prevPLPriceVal, currPLPriceBar, currPLPriceVal,
+                                 color=color.green, width=2, force_overlay=true)
+            // Hidden bullish: reference HL = currPL price, reference LL = currPL rsi
             if currPLPriceVal > prevPLPriceVal and currPLRsiVal < prevPLRsiVal and qualityOkL
-                hidBull := true
-                if showHidBull
-                    line.new(prevPLRsiBar, prevPLRsiVal, currPLRsiBar, currPLRsiVal,
-                             color=color.aqua, width=2)
-                    line.new(prevPLPriceBar, prevPLPriceVal, currPLPriceBar, currPLPriceVal,
-                             color=color.aqua, width=2, force_overlay=true)
+                pathOkHidBullL = (na(priceMinInterior) or priceMinInterior >= prevPLPriceVal - priceExcessL) and (na(rsiMinInterior) or rsiMinInterior >= currPLRsiVal - pathRsiPoints)
+                if pathOkHidBullL
+                    hidBull := true
+                    if showHidBull
+                        line.new(prevPLRsiBar, prevPLRsiVal, currPLRsiBar, currPLRsiVal,
+                                 color=color.aqua, width=2)
+                        line.new(prevPLPriceBar, prevPLPriceVal, currPLPriceBar, currPLPriceVal,
+                                 color=color.aqua, width=2, force_overlay=true)
 else
     if not na(newPricePLBar)
         waitPricePLBar := newPricePLBar
@@ -372,7 +427,7 @@ else
         waitRsiPLVal := newRsiPLVal
 
 // ============================================================
-// TENTATIVE HIGHS: pair, compare against LAST CONFIRMED (currPH...)
+// TENTATIVE HIGHS
 // ============================================================
 tPairedH   = false
 tPairedHPB = 0
@@ -401,7 +456,6 @@ if not tPairedH and not na(tNewRsiPHBar) and not na(tWaitPricePHBar) and math.ab
     tPairedHRB := tNewRsiPHBar
     tPairedHRV := tNewRsiPHVal
 
-// If ANY new tentative high fired, previously drawn tentative divergence is stale
 if (not na(tNewPricePHBar) or not na(tNewRsiPHBar))
     if not na(tPHLineRsi)
         line.delete(tPHLineRsi)
@@ -415,29 +469,55 @@ if tPairedH
     tWaitPricePHVal := na
     tWaitRsiPHBar   := na
     tWaitRsiPHVal   := na
-    // Compare against last CONFIRMED pair (currPH)
     if not na(currPHPriceVal)
         tGapH = tPairedHPB - currPHPriceBar
         if tGapH >= rangeMin and tGapH <= rangeMax
             tPriceDeltaH = math.abs(tPairedHPV - currPHPriceVal)
             tRsiDeltaH   = math.abs(tPairedHRV - currPHRsiVal)
             tQualityOkH  = tPriceDeltaH >= atrVal * minPriceAtrMult and tRsiDeltaH >= minRsiPoints
-            // Tentative regular bearish: price HH / RSI LH → dashed red
+            float tPriceMaxInterior = na
+            float tRsiMaxInterior   = na
+            if tPairedHPB - currPHPriceBar > 1
+                for i = 1 to 500
+                    int checkBar = currPHPriceBar + i
+                    if checkBar >= tPairedHPB
+                        break
+                    int offset = bar_index - checkBar
+                    if offset >= 0
+                        float pv = high[offset]
+                        if na(tPriceMaxInterior) or pv > tPriceMaxInterior
+                            tPriceMaxInterior := pv
+            if tPairedHRB - currPHRsiBar > 1
+                for i = 1 to 500
+                    int checkBar = currPHRsiBar + i
+                    if checkBar >= tPairedHRB
+                        break
+                    int offset = bar_index - checkBar
+                    if offset >= 0
+                        float rv = rsi[offset]
+                        if na(tRsiMaxInterior) or rv > tRsiMaxInterior
+                            tRsiMaxInterior := rv
+            tPriceExcess = atrVal * pathPriceAtrMult
+            // Tentative regular bearish: reference HH = tentative price, reference LH = currPH rsi
             if tPairedHPV > currPHPriceVal and tPairedHRV < currPHRsiVal and tQualityOkH
-                tRegBear := true
-                if showRegBear
-                    tPHLineRsi := line.new(currPHRsiBar, currPHRsiVal, tPairedHRB, tPairedHRV,
-                                           color=color.red, width=2, style=line.style_dashed)
-                    tPHLinePrice := line.new(currPHPriceBar, currPHPriceVal, tPairedHPB, tPairedHPV,
-                                             color=color.red, width=2, style=line.style_dashed, force_overlay=true)
-            // Tentative hidden bearish: price LH / RSI HH → dashed orange
+                tPathOkRegBearH = (na(tPriceMaxInterior) or tPriceMaxInterior <= tPairedHPV + tPriceExcess) and (na(tRsiMaxInterior) or tRsiMaxInterior <= currPHRsiVal + pathRsiPoints)
+                if tPathOkRegBearH
+                    tRegBear := true
+                    if showRegBear
+                        tPHLineRsi := line.new(currPHRsiBar, currPHRsiVal, tPairedHRB, tPairedHRV,
+                                               color=color.red, width=2, style=line.style_dashed)
+                        tPHLinePrice := line.new(currPHPriceBar, currPHPriceVal, tPairedHPB, tPairedHPV,
+                                                 color=color.red, width=2, style=line.style_dashed, force_overlay=true)
+            // Tentative hidden bearish: reference LH = currPH price, reference HH = tentative rsi
             if tPairedHPV < currPHPriceVal and tPairedHRV > currPHRsiVal and tQualityOkH
-                tHidBear := true
-                if showHidBear
-                    tPHLineRsi := line.new(currPHRsiBar, currPHRsiVal, tPairedHRB, tPairedHRV,
-                                           color=color.orange, width=2, style=line.style_dashed)
-                    tPHLinePrice := line.new(currPHPriceBar, currPHPriceVal, tPairedHPB, tPairedHPV,
-                                             color=color.orange, width=2, style=line.style_dashed, force_overlay=true)
+                tPathOkHidBearH = (na(tPriceMaxInterior) or tPriceMaxInterior <= currPHPriceVal + tPriceExcess) and (na(tRsiMaxInterior) or tRsiMaxInterior <= tPairedHRV + pathRsiPoints)
+                if tPathOkHidBearH
+                    tHidBear := true
+                    if showHidBear
+                        tPHLineRsi := line.new(currPHRsiBar, currPHRsiVal, tPairedHRB, tPairedHRV,
+                                               color=color.orange, width=2, style=line.style_dashed)
+                        tPHLinePrice := line.new(currPHPriceBar, currPHPriceVal, tPairedHPB, tPairedHPV,
+                                                 color=color.orange, width=2, style=line.style_dashed, force_overlay=true)
 else
     if not na(tNewPricePHBar)
         tWaitPricePHBar := tNewPricePHBar
@@ -447,7 +527,7 @@ else
         tWaitRsiPHVal := tNewRsiPHVal
 
 // ============================================================
-// TENTATIVE LOWS: mirror of highs
+// TENTATIVE LOWS
 // ============================================================
 tPairedL   = false
 tPairedLPB = 0
@@ -495,22 +575,49 @@ if tPairedL
             tPriceDeltaL = math.abs(tPairedLPV - currPLPriceVal)
             tRsiDeltaL   = math.abs(tPairedLRV - currPLRsiVal)
             tQualityOkL  = tPriceDeltaL >= atrVal * minPriceAtrMult and tRsiDeltaL >= minRsiPoints
-            // Tentative regular bullish: price LL / RSI HL → dashed green
+            float tPriceMinInterior = na
+            float tRsiMinInterior   = na
+            if tPairedLPB - currPLPriceBar > 1
+                for i = 1 to 500
+                    int checkBar = currPLPriceBar + i
+                    if checkBar >= tPairedLPB
+                        break
+                    int offset = bar_index - checkBar
+                    if offset >= 0
+                        float pv = low[offset]
+                        if na(tPriceMinInterior) or pv < tPriceMinInterior
+                            tPriceMinInterior := pv
+            if tPairedLRB - currPLRsiBar > 1
+                for i = 1 to 500
+                    int checkBar = currPLRsiBar + i
+                    if checkBar >= tPairedLRB
+                        break
+                    int offset = bar_index - checkBar
+                    if offset >= 0
+                        float rv = rsi[offset]
+                        if na(tRsiMinInterior) or rv < tRsiMinInterior
+                            tRsiMinInterior := rv
+            tPriceExcessL = atrVal * pathPriceAtrMult
+            // Tentative regular bullish: reference LL = tentative price, reference HL = currPL rsi
             if tPairedLPV < currPLPriceVal and tPairedLRV > currPLRsiVal and tQualityOkL
-                tRegBull := true
-                if showRegBull
-                    tPLLineRsi := line.new(currPLRsiBar, currPLRsiVal, tPairedLRB, tPairedLRV,
-                                           color=color.green, width=2, style=line.style_dashed)
-                    tPLLinePrice := line.new(currPLPriceBar, currPLPriceVal, tPairedLPB, tPairedLPV,
-                                             color=color.green, width=2, style=line.style_dashed, force_overlay=true)
-            // Tentative hidden bullish: price HL / RSI LL → dashed cyan (aqua)
+                tPathOkRegBullL = (na(tPriceMinInterior) or tPriceMinInterior >= tPairedLPV - tPriceExcessL) and (na(tRsiMinInterior) or tRsiMinInterior >= currPLRsiVal - pathRsiPoints)
+                if tPathOkRegBullL
+                    tRegBull := true
+                    if showRegBull
+                        tPLLineRsi := line.new(currPLRsiBar, currPLRsiVal, tPairedLRB, tPairedLRV,
+                                               color=color.green, width=2, style=line.style_dashed)
+                        tPLLinePrice := line.new(currPLPriceBar, currPLPriceVal, tPairedLPB, tPairedLPV,
+                                                 color=color.green, width=2, style=line.style_dashed, force_overlay=true)
+            // Tentative hidden bullish: reference HL = currPL price, reference LL = tentative rsi
             if tPairedLPV > currPLPriceVal and tPairedLRV < currPLRsiVal and tQualityOkL
-                tHidBull := true
-                if showHidBull
-                    tPLLineRsi := line.new(currPLRsiBar, currPLRsiVal, tPairedLRB, tPairedLRV,
-                                           color=color.aqua, width=2, style=line.style_dashed)
-                    tPLLinePrice := line.new(currPLPriceBar, currPLPriceVal, tPairedLPB, tPairedLPV,
-                                             color=color.aqua, width=2, style=line.style_dashed, force_overlay=true)
+                tPathOkHidBullL = (na(tPriceMinInterior) or tPriceMinInterior >= currPLPriceVal - tPriceExcessL) and (na(tRsiMinInterior) or tRsiMinInterior >= tPairedLRV - pathRsiPoints)
+                if tPathOkHidBullL
+                    tHidBull := true
+                    if showHidBull
+                        tPLLineRsi := line.new(currPLRsiBar, currPLRsiVal, tPairedLRB, tPairedLRV,
+                                               color=color.aqua, width=2, style=line.style_dashed)
+                        tPLLinePrice := line.new(currPLPriceBar, currPLPriceVal, tPairedLPB, tPairedLPV,
+                                                 color=color.aqua, width=2, style=line.style_dashed, force_overlay=true)
 else
     if not na(tNewPricePLBar)
         tWaitPricePLBar := tNewPricePLBar
@@ -520,7 +627,7 @@ else
         tWaitRsiPLVal := tNewRsiPLVal
 
 // ============================================================
-// Alerts (8 total: 4 confirmed + 4 tentative)
+// Alerts
 // ============================================================
 alertcondition(regBull  and showRegBull, "RSI Regular Bullish Divergence",
                "RSI Regular Bullish Divergence on {{ticker}} {{interval}}")
